@@ -638,7 +638,7 @@ def batch_process_photos(folder_name: str = "input", lut_name: str = None):
         console.print(f"[cyan]🎨 使用濾鏡: {lut_manager.current_lut}[/]")
 
     # 初始化 Vision 模型
-    vision_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    vision_model = genai.GenerativeModel('gemini-3-pro-preview')
 
     # 處理結果統計
     results = {
@@ -727,7 +727,7 @@ def self_update_code(modification_request: str):
     current_code = version_manager.get_current_code()
 
     # 使用 Gemini 分析並修改程式碼
-    code_model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    code_model = genai.GenerativeModel('gemini-3-pro-preview')
 
     prompt = f"""
 你是一個 Python 程式碼專家。請根據以下要求修改程式碼：
