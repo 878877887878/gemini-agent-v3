@@ -31,14 +31,48 @@ if API_KEY:
 
 
 class LUTManager:
+    def __init__(self):
+        self.lut_map = {}  # 用來儲存 {顯示名稱: 檔案完整路徑} 的字典
+
     def list_luts(self):
+        """遞迴掃描所有子目錄，更新索引並回傳顯示名稱列表"""
+        self.lut_map = {}  # 每次列出時重新掃描，確保抓到新檔案
         if not os.path.exists(LUT_DIR): return []
-        return [f for f in os.listdir(LUT_DIR) if f.endswith('.cube')]
+
+        # 使用 os.walk 進行深度遞迴搜尋
+        for dirpath, dirnames, filenames in os.walk(LUT_DIR):
+            for filename in filenames:
+                # 支援 .cube 以及常見 LUT 格式
+                if filename.lower().endswith(('.cube', '.3dl', '.look')):
+
+                    # 組合顯示名稱： "資料夾名稱 - 檔名" (這樣使用者才知道是哪個系列的)
+                    folder_name = os.path.basename(dirpath)
+                    # 如果 LUT 就在根目錄，顯示名稱就不加資料夾
+                    if os.path.abspath(dirpath) == os.path.abspath(LUT_DIR):
+                        display_name = filename
+                    else:
+                        display_name = f"{folder_name} - {filename}"
+
+                    full_path = os.path.join(dirpath, filename)
+                    self.lut_map[display_name] = full_path
+
+        return sorted(list(self.lut_map.keys()))
 
     def load_lut(self, name):
+        """透過顯示名稱找到真實路徑並載入"""
         try:
-            return load_cube_file(os.path.join(LUT_DIR, name))
-        except:
+            # 從字典查真實路徑
+            full_path = self.lut_map.get(name)
+
+            # 防呆：如果字典裡沒有 (例如程式剛啟動還沒掃描)，嘗試直接拼湊舊邏輯路徑
+            if not full_path:
+                full_path = os.path.join(LUT_DIR, name)
+
+            if full_path and os.path.exists(full_path):
+                return load_cube_file(full_path)
+            return None
+        except Exception as e:
+            print(f"⚠️ LUT 載入失敗 ({name}): {e}")
             return None
 
 
