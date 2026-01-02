@@ -230,4 +230,4 @@ if __name__ == "__main__":
     ui = create_ui()
     # 將 theme 和 css 移到這裡 (如果您的 Gradio 版本支援的話)，或直接不設定以求最穩定
     # 這裡使用最基本的設定以確保能執行
-    ui.queue().launch(inbrowser=True, server_name="127.0.0.1", server_port=7860)
+    ui.queue().launch(inbrowser=True, server_name="127.0.0.1")

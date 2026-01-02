@@ -1,0 +1,7 @@
+google-generativeai
+python-dotenv
+rich
+Pillow
+pillow-lut
+gradio
+requests

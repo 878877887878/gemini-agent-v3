@@ -337,8 +337,22 @@ class LUTManager:
             console.print(f"[green]✅ 建立 LUT 資料夾: {self.lut_dir}[/]")
 
     def list_local_luts(self):
-        """列出本地所有 LUT 檔案"""
-        lut_files = [f for f in os.listdir(self.lut_dir) if f.endswith('.cube')]
+        """遞迴列出本地所有 LUT 檔案（含子資料夾）"""
+        lut_files = []
+        if not os.path.exists(self.lut_dir):
+            return []
+
+        # 使用 os.walk 進行深度搜尋
+        for root, _, files in os.walk(self.lut_dir):
+            for file in files:
+                # 支援不分大小寫的 .cube 檔名
+                if file.lower().endswith('.cube'):
+                    # 取得完整路徑
+                    full_path = os.path.join(root, file)
+                    # 轉成相對於 LUT_DIR 的路徑 (例如: "Sony/S-Log3.cube")
+                    rel_path = os.path.relpath(full_path, self.lut_dir)
+                    lut_files.append(rel_path)
+
         return sorted(lut_files)
 
     def download_lut(self, name, url):
