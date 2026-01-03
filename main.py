@@ -2,7 +2,6 @@ import os
 import sys
 import asyncio
 import time
-import subprocess
 import google.generativeai as genai
 from dotenv import load_dotenv
 from rich.console import Console
@@ -12,11 +11,12 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.progress import track
 
-# 匯入 v5 核心模組
+# 匯入 v10 核心模組
 from core.lut_engine import LUTEngine
 from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
 from core.memory_manager import MemoryManager
+from core.security import execute_safe_command  # [新增] 安全模組
 
 # ================= 系統設定 =================
 if sys.platform.startswith('win'):
@@ -39,7 +39,7 @@ memory_mgr = MemoryManager()
 lut_engine = LUTEngine()
 rag = KnowledgeBase()
 
-# 索引建立
+# 自動索引
 try:
     all_luts = lut_engine.list_luts()
     if all_luts:
@@ -51,24 +51,6 @@ planner = SmartPlanner(API_KEY, rag)
 
 
 # ================= 工具函式 =================
-def execute_terminal_command(command: str):
-    """執行 Windows 終端機指令"""
-    try:
-        console.print(f"[dim]💻 正在執行: {command}[/]")
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding='utf-8'
-        )
-        if result.returncode == 0:
-            return f"✅ 執行成功:\n{result.stdout}"
-        else:
-            return f"❌ 執行失敗:\n{result.stderr}"
-    except Exception as e:
-        return f"⚠️ 系統錯誤: {str(e)}"
-
 
 def remember_user_preference(info: str):
     """記憶工具"""
@@ -77,51 +59,49 @@ def remember_user_preference(info: str):
 
 
 def check_available_luts(keyword: str = ""):
-    """查詢本地 LUT 工具"""
-    console.print(f"[dim]🔍 AI 正在翻閱 LUT 資料庫 (關鍵字: {keyword})...[/]")
-    all_files = lut_engine.list_luts()
-    names = [os.path.basename(f) for f in all_files]
+    """查詢工具 (現在使用 LUTEngine 的索引，極快)"""
+    console.print(f"[dim]🔍 查詢 LUT 索引 (關鍵字: {keyword})...[/]")
+    all_names = list(lut_engine.lut_index.keys())
 
     if keyword:
-        filtered = [n for n in names if keyword.lower() in n.lower()]
+        filtered = [n for n in all_names if keyword.lower() in n]
         if not filtered:
-            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(names)} 個濾鏡可選。"
-        return f"找到 {len(filtered)} 個相關濾鏡，例如: {', '.join(filtered[:30])}..."
+            return f"找不到 '{keyword}'，共有 {len(all_names)} 個濾鏡。"
+        return f"找到 {len(filtered)} 個：{', '.join(filtered[:20])}..."
 
     import random
-    sample = random.sample(names, min(len(names), 30))
-    return f"系統目前擁有 {len(names)} 個濾鏡。包含: {', '.join(sample)}... 等。"
+    if all_names:
+        sample = random.sample(all_names, min(len(all_names), 20))
+        return f"系統共有 {len(all_names)} 個濾鏡，例如：{', '.join(sample)}..."
+    return "系統目前沒有任何濾鏡。"
 
 
 def create_chat_session():
-    """建立 Session (整合所有工具)"""
+    """建立 Session (使用安全指令工具)"""
     genai.configure(api_key=API_KEY)
 
-    # 這裡賦予了查閱 LUT 的權限
-    tools = [execute_terminal_command, remember_user_preference, check_available_luts]
+    # [修改] 使用 execute_safe_command
+    tools = [execute_safe_command, remember_user_preference, check_available_luts]
 
     base_prompt = """
     你是一個強大的 AI 助理 (Gemini 3 Pro)。
 
-    【你的能力與資源】
-    1. 你擁有「視覺引擎」，可以存取使用者硬碟中的 LUT 濾鏡 (透過 check_available_luts 工具)。
-    2. 千萬不要說「我無法存取檔案」，你完全可以透過工具查閱。
-    3. 如果使用者覺得濾鏡重複，請主動查詢 check_available_luts 並推薦其他款。
+    【安全守則】
+    1. 執行指令前，請使用 execute_safe_command。
+    2. 遇到無法執行的指令 (被攔截)，請誠實告知使用者權限不足。
 
-    【核心行為準則】
-    1. 圖片處理：引導使用圖片模式。
-    2. 系統指令：使用 execute_terminal_command。
-    3. 記憶能力：使用 remember_user_preference。
-    4. 語言風格：繁體中文，自信、專業。
+    【能力】
+    1. 修圖：引導至視覺模式。
+    2. 查詢濾鏡：使用 check_available_luts。
+    3. 記憶：使用 remember_user_preference。
     """
 
     dynamic_context = memory_mgr.get_system_prompt_addition()
-    final_system_prompt = base_prompt + dynamic_context
 
     model = genai.GenerativeModel(
         model_name='gemini-3-pro-preview',
         tools=tools,
-        system_instruction=final_system_prompt
+        system_instruction=base_prompt + dynamic_context
     )
     return model.start_chat(enable_automatic_function_calling=True)
 
@@ -167,7 +147,7 @@ def select_files_from_directory(dir_path):
 # ================= 主程式 =================
 async def main():
     console.clear()
-    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v9 (Integrated CLI)[/]", border_style="cyan"))
+    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v10 (Secure & Optimized)[/]", border_style="cyan"))
     console.print(f"[dim]✅ 系統就緒：已載入 {len(all_luts)} 個濾鏡 | 雙核大腦已連線[/]\n")
 
     while True:
@@ -215,7 +195,7 @@ async def main():
                                                                   plan.get('intensity', 1.0))
                             if final_img:
                                 if not os.path.exists("output"): os.makedirs("output")
-                                save_path = f"output/v9_{os.path.basename(img_path)}"
+                                save_path = f"output/v10_{os.path.basename(img_path)}"
                                 final_img.save(save_path)
                                 console.print(f"   [green]✅ 儲存: {save_path}[/]")
                 except KeyboardInterrupt:

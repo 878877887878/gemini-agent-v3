@@ -17,6 +17,7 @@ from core.lut_engine import LUTEngine
 from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
 from core.memory_manager import MemoryManager
+from core.security import execute_safe_command  # [新增] 安全模組
 
 # 系統初始化
 if sys.platform.startswith('win'):
@@ -46,60 +47,41 @@ planner = SmartPlanner(API_KEY, rag)
 
 
 # ================= 工具函式 =================
-def execute_terminal_command(command: str):
-    import subprocess
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding='utf-8'
-        )
-        if result.returncode == 0:
-            return f"✅ 執行成功:\n{result.stdout}"
-        else:
-            return f"❌ 執行失敗:\n{result.stderr}"
-    except Exception as e:
-        return f"⚠️ 系統錯誤: {str(e)}"
-
-
 def remember_user_preference(info: str):
     return memory_mgr.add_preference(info)
 
 
 def check_available_luts(keyword: str = ""):
     """查詢本地 LUT 工具 (GUI 版)"""
-    all_files = lut_engine.list_luts()
-    names = [os.path.basename(f) for f in all_files]
+    all_names = list(lut_engine.lut_index.keys())
     if keyword:
-        filtered = [n for n in names if keyword.lower() in n.lower()]
+        filtered = [n for n in all_names if keyword.lower() in n]
         if not filtered:
-            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(names)} 個濾鏡。"
+            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(all_names)} 個濾鏡。"
         return f"找到 {len(filtered)} 個相關濾鏡，例如: {', '.join(filtered[:30])}..."
     import random
-    sample = random.sample(names, min(len(names), 30))
-    return f"系統目前擁有 {len(names)} 個濾鏡。包含: {', '.join(sample)}... 等。"
+    sample = random.sample(all_names, min(len(all_names), 30))
+    return f"系統目前擁有 {len(all_names)} 個濾鏡。包含: {', '.join(sample)}... 等。"
 
 
 # ================= 對話邏輯 =================
 def create_chat_session():
     genai.configure(api_key=API_KEY)
 
-    # 確保 GUI 也能查閱 LUT
-    tools = [execute_terminal_command, remember_user_preference, check_available_luts]
+    # [修改] 使用 execute_safe_command
+    tools = [execute_safe_command, remember_user_preference, check_available_luts]
 
     base_prompt = """
     你是一個強大的 AI 助理 (Gemini 3 Pro)。
     這是一個 GUI 介面環境。
 
-    【你的能力與資源】
-    1. 你擁有「視覺引擎」，可以存取使用者硬碟中的 LUT 濾鏡 (透過 check_available_luts 工具)。
-    2. 千萬不要說「我無法存取檔案」，你完全可以透過工具查閱。
+    【安全守則】
+    1. 執行指令前，請使用 execute_safe_command，嚴禁執行刪除或破壞性指令。
+    2. 遇到無法執行的指令 (被攔截)，請誠實告知使用者權限不足。
 
     【核心行為準則】
     1. 圖片處理：如果使用者上傳圖片或要求修圖，請引導他們切換到「👁️ 智能視覺修圖」分頁。
-    2. 系統指令：可以使用 execute_terminal_command 執行系統指令。
+    2. 系統指令：可以使用 execute_safe_command 執行白名單指令。
     3. 記憶能力：如果使用者提到個人偏好，請務必使用 remember_user_preference 工具儲存。
     4. 語言風格：請使用繁體中文，回答親切且專業。
     """
@@ -167,9 +149,9 @@ def get_current_memory():
 
 
 # ================= GUI 建構 =================
-with gr.Blocks(title="Gemini Agent v9 (GUI)") as app:
-    gr.Markdown("# 🤖 Gemini Agent v9 (Hybrid GUI)")
-    gr.Markdown("雙核大腦：`Gemini 3 Pro` + `Visual Smart Planner` + `Long-term Memory`")
+with gr.Blocks(title="Gemini Agent v10 (GUI)") as app:
+    gr.Markdown("# 🤖 Gemini Agent v10 (Hybrid GUI)")
+    gr.Markdown("雙核大腦：`Gemini 3 Pro` + `Visual Smart Planner` + `Secure Core`")
 
     chat_state = gr.State(None)
 
@@ -194,14 +176,13 @@ with gr.Blocks(title="Gemini Agent v9 (GUI)") as app:
                 outputs=[output_img, output_info]
             )
 
-        # Tab 2: 對話 (修正版)
+        # Tab 2: 對話
         with gr.TabItem("💬 核心大腦 (Chat & Memory)"):
-            chatbot = gr.Chatbot(height=500)  # 預設 tuple 格式
+            chatbot = gr.Chatbot(height=500)
             msg_input = gr.Textbox(placeholder="輸入文字... (例如：'我有什麼濾鏡?' 或 'git status')", label="User")
 
 
             def user_msg(user_message, history):
-                # Tuple append
                 return "", history + [[user_message, None]]
 
 

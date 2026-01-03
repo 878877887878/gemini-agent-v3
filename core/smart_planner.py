@@ -1,75 +1,80 @@
 import json
 import os
+import re
 import google.generativeai as genai
+from PIL import Image
 
 
 class SmartPlanner:
     def __init__(self, api_key, rag_engine):
         genai.configure(api_key=api_key)
         self.rag = rag_engine
-        # 使用 Gemini 3 Pro (Context Window 夠大)
         self.model = genai.GenerativeModel('gemini-3-pro-preview')
 
-    def generate_plan(self, image_path, user_request):
-        """
-        視覺推理核心
-        """
+    def _extract_json(self, text):
+        """使用 Regex 強制提取 JSON 物件 (忽略 Markdown 符號)"""
+        try:
+            # 尋找最外層的 {}
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+                return json.loads(json_str)
+        except:
+            pass
+        return None
 
-        # [修改點] 大幅增加檢索數量 (60 個)
+    def generate_plan(self, image_path, user_request):
+        # 1. RAG 檢索 (給 60 個，增加多樣性)
         available_luts = self.rag.search(user_request, n_results=60)
 
-        # 2. 建構 Visual CoT Prompt
+        # 2. Prompt
         prompt = f"""
-        你是一位專業的影像調色師。請分析這張圖片並制定修圖計畫。
+        你是一位專業調色師。
+        需求："{user_request}"
 
-        【使用者需求】
-        "{user_request}"
-
-        【 📚 你的濾鏡軍火庫 (已篩選最相關的 60 款) 】
+        可用濾鏡庫 (請嚴格從中選擇，不要自己編造檔名)：
         {available_luts}
 
-        【任務要求】
-        1. **拒絕無聊**：請嘗試從上方清單中，挑選最適合但「不一定是最常見」的濾鏡。不要總是選第一個。
-        2. **視覺分析**：觀察圖片的光線、色溫、曝光。
-        3. **決策制定**：
-           - 選擇一個 LUT (必須是清單中確切存在的檔名)。
-           - 決定強度 (Intensity 0.0~1.0)。
-        4. **文案構思**：寫一段符合氛圍的 IG 文案。
-
-        請直接回傳 **純 JSON 格式** (不要 Markdown):
+        請分析圖片並回傳 JSON (不要 Markdown)：
         {{
-            "analysis": "圖片分析...",
-            "reasoning": "為什麼選這個濾鏡...",
-            "selected_lut": "完整檔名.cube",
+            "analysis": "...",
+            "reasoning": "...",
+            "selected_lut": "精確檔名.cube",
             "intensity": 0.8,
-            "caption": "文案..."
+            "caption": "..."
         }}
         """
 
-        # 3. Call Vision API
         try:
             if not os.path.isfile(image_path):
-                return {
-                    "analysis": "錯誤",
-                    "reasoning": f"找不到檔案: {image_path}",
-                    "selected_lut": None
-                }
+                return {"selected_lut": None, "reasoning": "找不到圖片"}
 
-            img_file = genai.upload_file(image_path)
+            # [優化] 製作暫存縮圖 (加速上傳)
+            # AI 不需要看 4K 原圖就能判斷風格，縮到 1024px 足夠了
+            temp_thumb = "temp_analysis_thumb.jpg"
+            with Image.open(image_path) as img:
+                img.thumbnail((1024, 1024))
+                img.save(temp_thumb, quality=80)
+
+            img_file = genai.upload_file(temp_thumb)
             response = self.model.generate_content([prompt, img_file])
 
-            # 清理 JSON 字串
-            text = response.text.strip()
-            if text.startswith("```json"):
-                text = text.split("```json")[1]
-            if text.endswith("```"):
-                text = text.split("```")[0]
+            # 3. 穩健解析
+            plan = self._extract_json(response.text)
 
-            return json.loads(text)
+            # 4. 驗證與保底 (Fallback)
+            if not plan or not plan.get('selected_lut'):
+                print("⚠️ JSON 解析失敗或欄位缺失，啟動保底策略")
+                return {
+                    "analysis": "解析失敗，使用自動推薦",
+                    "reasoning": "Fallback strategy",
+                    "selected_lut": available_luts[0] if available_luts else None,
+                    "intensity": 0.7,
+                    "caption": "風格修圖"
+                }
+
+            return plan
+
         except Exception as e:
-            print(f"❌ 策劃失敗: {e}")
-            return {
-                "analysis": "API Error",
-                "reasoning": str(e),
-                "selected_lut": None
-            }
+            print(f"❌ Planner Error: {e}")
+            return {"selected_lut": None, "reasoning": str(e)}
