@@ -11,13 +11,13 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.progress import track
 
-# 匯入 v12.1 核心模組
+# 匯入 v13 核心模組
 from core.lut_engine import LUTEngine
 from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
 from core.memory_manager import MemoryManager
 from core.security import execute_safe_command
-from core.logger import Logger  # [新增]
+from core.logger import Logger
 
 if sys.platform.startswith('win'):
     try:
@@ -35,7 +35,7 @@ if not API_KEY:
     sys.exit(1)
 
 # 初始化核心
-Logger.info("正在啟動 Gemini Agent v12.1 (Debug Mode)...")
+Logger.info("正在啟動 Gemini Agent v13 (Cinematic CLI)...")
 memory_mgr = MemoryManager()
 lut_engine = LUTEngine()
 rag = KnowledgeBase()
@@ -124,7 +124,7 @@ def select_files_from_directory(dir_path):
 
 async def main():
     console.clear()
-    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v12.1 (Debug Mode)[/]", border_style="cyan"))
+    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v13 (Film Simulation)[/]", border_style="cyan"))
 
     while True:
         try:
@@ -162,14 +162,17 @@ async def main():
 
                         if plan and plan.get('selected_lut'):
                             if count == 1:
+                                # v13 顯示詳細參數 (含 Curve/Sharpness)
                                 console.print(Panel(
                                     f"技術分析: {plan.get('technical_analysis', '無')}\n"
                                     f"調色策略: {plan.get('style_strategy', '無')}\n"
                                     f"LUT: {plan['selected_lut']} (強度 {plan.get('intensity', 1.0)})\n"
-                                    f"參數: 亮({plan.get('brightness')}) 對({plan.get('contrast')}) 溫({plan.get('temperature')}) 調({plan.get('tint')})",
+                                    f"色彩: 亮({plan.get('brightness')}) 溫({plan.get('temperature')}) 調({plan.get('tint')})\n"
+                                    f"質感: 曲線({plan.get('curve', 'Linear')}) 銳利({plan.get('sharpness', 1.0)})",
                                     title="AI 決策面板"
                                 ))
 
+                            # v13 傳遞完整參數
                             final_img, msg = lut_engine.apply_lut(
                                 img_path,
                                 plan['selected_lut'],
@@ -178,12 +181,14 @@ async def main():
                                 saturation=plan.get('saturation', 1.0),
                                 temperature=plan.get('temperature', 0.0),
                                 tint=plan.get('tint', 0.0),
-                                contrast=plan.get('contrast', 1.0)
+                                contrast=plan.get('contrast', 1.0),
+                                curve=plan.get('curve', 'Linear'),  # 新增
+                                sharpness=plan.get('sharpness', 1.0)  # 新增
                             )
 
                             if final_img:
                                 if not os.path.exists("output"): os.makedirs("output")
-                                save_path = f"output/v12_{os.path.basename(img_path)}"
+                                save_path = f"output/v13_{os.path.basename(img_path)}"
                                 final_img.save(save_path)
                                 Logger.success(f"已儲存: {save_path}")
                 except KeyboardInterrupt:

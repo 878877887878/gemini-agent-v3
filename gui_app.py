@@ -17,7 +17,7 @@ from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
 from core.memory_manager import MemoryManager
 from core.security import execute_safe_command
-from core.logger import Logger  # [新增]
+from core.logger import Logger
 
 if sys.platform.startswith('win'):
     try:
@@ -33,7 +33,7 @@ if not API_KEY:
     print("❌ 錯誤: 請在 .env 設定 GEMINI_API_KEY")
     sys.exit(1)
 
-Logger.info("正在啟動 GUI 核心系統 (v12.1 Debug Mode)...")
+Logger.info("正在啟動 GUI 核心系統 (v13 Cinematic)...")
 memory_mgr = MemoryManager()
 lut_engine = LUTEngine()
 rag = KnowledgeBase()
@@ -90,7 +90,7 @@ def chat_response(message, history, session_state):
         return f"❌ 發生錯誤: {str(e)}", session_state
 
 
-# 視覺邏輯
+# ================= 視覺邏輯 (v13 Update) =================
 def process_image_smartly(image, user_req):
     Logger.info(f"GUI 觸發修圖，需求: {user_req}")
     if image is None: return None, "❌ 請先上傳圖片"
@@ -104,6 +104,7 @@ def process_image_smartly(image, user_req):
     if not plan or not plan.get('selected_lut'):
         return None, f"⚠️ AI 思考失敗: {plan.get('reasoning', '未知錯誤')}"
 
+    # v13 傳遞所有新參數 (含 Curve/Sharpness)
     final_img, msg = lut_engine.apply_lut(
         temp_path,
         plan['selected_lut'],
@@ -112,18 +113,22 @@ def process_image_smartly(image, user_req):
         saturation=plan.get('saturation', 1.0),
         temperature=plan.get('temperature', 0.0),
         tint=plan.get('tint', 0.0),
-        contrast=plan.get('contrast', 1.0)
+        contrast=plan.get('contrast', 1.0),
+        curve=plan.get('curve', 'Linear'),  # 新增
+        sharpness=plan.get('sharpness', 1.0)  # 新增
     )
 
-    report = f"""### 🎨 AI 調色師報告 (v12.1)
+    # v13 專業報告
+    report = f"""### 🎨 AI 調色師報告 (v13)
 **技術分析**: {plan.get('technical_analysis', '無')}
 **調色策略**: {plan.get('style_strategy', '無')}
 
-| 參數 | 數值 |
+| 參數類別 | 設定值 |
 | :--- | :--- |
-| **LUT** | `{plan.get('selected_lut')}` |
-| **曝光/對比** | `Bright:{plan.get('brightness')}` / `Cont:{plan.get('contrast')}` |
-| **色彩平衡** | `Temp:{plan.get('temperature')}` / `Tint:{plan.get('tint')}` |
+| **LUT** | `{plan.get('selected_lut')}` (強度 {plan.get('intensity')}) |
+| **色彩平衡** | Temp: `{plan.get('temperature')}` / Tint: `{plan.get('tint')}` |
+| **曝光質感** | Curve: `{plan.get('curve')}` / Bright: `{plan.get('brightness')}` |
+| **細節** | Sharpness: `{plan.get('sharpness')}` / Contrast: `{plan.get('contrast')}` |
 
 > {plan.get('caption')}
 """
@@ -138,8 +143,9 @@ def get_current_memory():
 
 
 # GUI 建構
-with gr.Blocks(title="Gemini Agent v12.1 (Debug)") as app:
-    gr.Markdown("# 🤖 Gemini Agent v12.1 (Cinematic Grade + Debug)")
+with gr.Blocks(title="Gemini Agent v13 (Cinematic)") as app:
+    gr.Markdown("# 🤖 Gemini Agent v13 (Cinematic Grade)")
+    gr.Markdown("引擎特色：`Log LUT 防呆` + `S-Curve 電影曲線` + `Tint 膚色校正`")
 
     chat_state = gr.State(None)
 
@@ -148,8 +154,8 @@ with gr.Blocks(title="Gemini Agent v12.1 (Debug)") as app:
             with gr.Row():
                 with gr.Column(scale=1):
                     input_img = gr.Image(type="pil", label="上傳圖片")
-                    style_input = gr.Textbox(label="風格需求", placeholder="日系冷白、王家衛...", lines=2)
-                    btn_process = gr.Button("🚀 開始 Pro 級修圖", variant="primary")
+                    style_input = gr.Textbox(label="風格需求", placeholder="日系冷白、電影感...", lines=2)
+                    btn_process = gr.Button("🚀 開始 v13 修圖", variant="primary")
                 with gr.Column(scale=1):
                     output_img = gr.Image(label="處理結果", type="pil")
                     output_info = gr.Markdown(label="AI 思考報告")

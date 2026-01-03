@@ -3,7 +3,7 @@ import os
 import re
 import google.generativeai as genai
 from PIL import Image
-from core.logger import Logger  # [新增]
+from core.logger import Logger
 
 
 class SmartPlanner:
@@ -25,88 +25,73 @@ class SmartPlanner:
     def generate_plan(self, image_path, user_request):
         Logger.info(f"開始策劃修圖: {user_request}")
 
-        # 1. RAG
         available_luts = self.rag.search(user_request, n_results=60)
-        Logger.debug(f"RAG 檢索到 {len(available_luts)} 個候選 LUT")
 
-        # 2. Prompt (v12)
+        # v13 Prompt: 加入 Log LUT 防呆與曲線控制
         prompt = f"""
-        你是一位好萊塢等級的 DI (Digital Intermediate) 專業調色師。
-        請對這張影像進行「深度技術分析」，並制定修圖參數。
+        你是一位好萊塢等級的 DI 調色師。請分析這張圖片並制定修圖計畫。
 
         【使用者需求】
         "{user_request}"
 
-        【 🎨 可用 LUT 資源庫 】
+        【 📚 可用 LUT 資源庫 】
         {available_luts}
 
-        【 🛠️ 思考流程 (Chain of Thought) 】
-        1. **技術檢測**: 
-           - 曝光: 是否過暗(Underexposed)或過曝(Overexposed)?
-           - 白平衡: 是否偏黃(Too Warm)、偏藍(Too Cool)或偏綠(Tint Issue)?
-           - 對比度: 畫面是否灰濛濛(Flat)或太刺眼(Harsh)?
-        2. **風格配對**: 從 LUT 庫中挑選最符合「敘事氛圍」的一款。
-        3. **參數微調 (Pre-processing)**: 
-           - 設定 `brightness` (亮度 0.8~1.5)
-           - 設定 `contrast` (對比度 0.8~1.3, 增加對比可去灰霧)
-           - 設定 `temperature` (色溫 -1.0~1.0, 負值修正黃光)
-           - 設定 `tint` (色調 -1.0~1.0, 負值修正綠色偏, 正值增加洋紅/膚色通透感)
-           - 設定 `saturation` (飽和度 0.0~1.5)
+        【 ⚠️ 關鍵守則：Log LUT 防呆 】
+        1. **檢查檔名**：如果圖片看起來是標準對比 (JPG/PNG 直出)，**絕對禁止** 選擇檔名包含 "Log", "FLog", "SLog", "VLog", "Raw" 的技術還原 LUT。
+        2. **後果**：在普通照片上套用 Log LUT 會導致膚色爆紅、暗部死黑（如使用者抱怨的「烤焦」效果）。
+        3. **替代方案**：請優先選擇帶有 "Rec709", "Standard", "Film", "Creative" 或無特殊標記的風格化 LUT。
 
-        請回傳 **純 JSON 格式** (不要 Markdown)：
+        【 🛠️ 參數決策 (細膩度優先) 】
+        1. **富士/膠片感 (Fuji/Film Look)**: 
+           - 重點是「通透感」與「柔和高光」。不要過度增加對比。
+           - 若原圖已是數位直出，通常需要 `contrast: 0.9` (降低數位銳利感) 甚至 `0.85`。
+           - 膚色保護：若原圖偏紅，請用 `tint: -0.1` (往綠偏移) 來校正。
+        2. **參數定義**:
+           - `curve`: "S-Curve" (電影感), "Linear" (無), "Soft-High" (柔化高光), "Lift-Shadow" (拉提暗部)
+           - `sharpness`: 銳利度 (0.0~2.0, 富士感通常設 0.8 讓畫質軟一點)
+
+        請回傳 **純 JSON 格式**：
         {{
-            "technical_analysis": "原圖曝光不足約 1 檔，室內光線導致膚色嚴重偏黃綠...",
-            "style_strategy": "採用低飽和冷色調 LUT 來中和黃光，並提升對比度增加質感...",
-            "selected_lut": "精確檔名.cube",
-            "intensity": 0.85,
-            "brightness": 1.2,
-            "contrast": 1.1,
+            "technical_analysis": "原圖為標準 Rec709 直出，膚色受室內光影響偏暖...",
+            "style_strategy": "避開 F-Log LUT，選擇標準膠片模擬 LUT。降低數位銳利度，使用 S 曲線營造層次...",
+            "selected_lut": "非Log的風格檔名.cube",
+            "intensity": 0.6,
+            "brightness": 1.0,
+            "contrast": 0.9,
             "saturation": 0.9,
-            "temperature": -0.3,
-            "tint": 0.2,
+            "temperature": -0.1,
+            "tint": 0.0,
+            "curve": "Soft-High", 
+            "sharpness": 0.9,
             "caption": "..."
         }}
         """
 
         try:
             if not os.path.isfile(image_path):
-                Logger.error(f"找不到圖片檔案: {image_path}")
                 return {"selected_lut": None, "reasoning": "找不到圖片"}
 
-            # 縮圖加速
             temp_thumb = "temp_analysis_thumb.jpg"
             with Image.open(image_path) as img:
                 img.thumbnail((1024, 1024))
                 img.save(temp_thumb, quality=85)
 
-            Logger.debug("圖片已縮放並上傳至 Gemini...")
             img_file = genai.upload_file(temp_thumb)
-
             response = self.model.generate_content([prompt, img_file])
-
-            # Debug: 印出原始回應的前 100 字，確認 AI 有沒有亂講話
-            Logger.debug(f"AI 原始回應 (前段): {response.text[:100]}...")
+            Logger.debug(f"AI 思考: {response.text[:100]}...")
 
             plan = self._extract_json(response.text)
 
-            if not plan or not plan.get('selected_lut'):
-                Logger.warn("AI 回傳的 JSON 格式錯誤或欄位缺失，啟動 Fallback")
-                return {
-                    "technical_analysis": "解析失敗",
-                    "style_strategy": "Fallback",
-                    "selected_lut": available_luts[0] if available_luts else None,
-                    "intensity": 0.7,
-                    "brightness": 1.0,
-                    "contrast": 1.0,
-                    "saturation": 1.0,
-                    "temperature": 0.0,
-                    "tint": 0.0,
-                    "caption": "AI 自動修圖"
-                }
+            # v13 強制防呆檢查 (Double Check)
+            if plan and plan.get('selected_lut'):
+                lut_name = plan['selected_lut'].lower()
+                if any(x in lut_name for x in ['log', 'raw']) and plan.get('intensity', 1.0) > 0.4:
+                    Logger.warn(f"AI 選到了 Log LUT ({lut_name}) 但原圖似乎是 JPG。強制降低強度。")
+                    plan['intensity'] = 0.3  # 強制壓低強度以挽救畫質
 
-            Logger.success(f"策劃完成。策略: {plan.get('style_strategy')[:50]}...")
             return plan
 
         except Exception as e:
-            Logger.error(f"SmartPlanner 發生錯誤: {e}")
+            Logger.error(f"SmartPlanner 錯誤: {e}")
             return {"selected_lut": None, "reasoning": str(e)}
