@@ -17,7 +17,7 @@ from core.lut_engine import LUTEngine
 from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
 from core.memory_manager import MemoryManager
-from core.security import execute_safe_command  # [新增] 安全模組
+from core.security import execute_safe_command
 
 # 系統初始化
 if sys.platform.startswith('win'):
@@ -34,7 +34,7 @@ if not API_KEY:
     print("❌ 錯誤: 請在 .env 設定 GEMINI_API_KEY")
     sys.exit(1)
 
-print("🚀 正在啟動 GUI 核心系統...")
+print("🚀 正在啟動 GUI 核心系統 (v11)...")
 memory_mgr = MemoryManager()
 lut_engine = LUTEngine()
 rag = KnowledgeBase()
@@ -57,7 +57,7 @@ def check_available_luts(keyword: str = ""):
     if keyword:
         filtered = [n for n in all_names if keyword.lower() in n]
         if not filtered:
-            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(all_names)} 個濾鏡。"
+            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(names)} 個濾鏡。"
         return f"找到 {len(filtered)} 個相關濾鏡，例如: {', '.join(filtered[:30])}..."
     import random
     sample = random.sample(all_names, min(len(all_names), 30))
@@ -68,7 +68,7 @@ def check_available_luts(keyword: str = ""):
 def create_chat_session():
     genai.configure(api_key=API_KEY)
 
-    # [修改] 使用 execute_safe_command
+    # 使用 execute_safe_command
     tools = [execute_safe_command, remember_user_preference, check_available_luts]
 
     base_prompt = """
@@ -76,8 +76,7 @@ def create_chat_session():
     這是一個 GUI 介面環境。
 
     【安全守則】
-    1. 執行指令前，請使用 execute_safe_command，嚴禁執行刪除或破壞性指令。
-    2. 遇到無法執行的指令 (被攔截)，請誠實告知使用者權限不足。
+    1. 執行指令前，請使用 execute_safe_command。
 
     【核心行為準則】
     1. 圖片處理：如果使用者上傳圖片或要求修圖，請引導他們切換到「👁️ 智能視覺修圖」分頁。
@@ -108,7 +107,7 @@ def chat_response(message, history, session_state):
         return f"❌ 發生錯誤: {str(e)}", session_state
 
 
-# ================= 視覺邏輯 =================
+# ================= 視覺邏輯 (v11 Update) =================
 def process_image_smartly(image, user_req):
     if image is None:
         return None, "❌ 請先上傳圖片"
@@ -124,15 +123,23 @@ def process_image_smartly(image, user_req):
     if not plan or not plan.get('selected_lut'):
         return None, f"⚠️ AI 思考失敗: {plan.get('reasoning', '未知錯誤')}"
 
+    # [v11 關鍵] 傳遞新參數
     final_img, msg = lut_engine.apply_lut(
         temp_path,
         plan['selected_lut'],
-        intensity=plan.get('intensity', 1.0)
+        intensity=plan.get('intensity', 1.0),
+        brightness=plan.get('brightness', 1.0),
+        saturation=plan.get('saturation', 1.0),
+        temperature=plan.get('temperature', 0.0)
     )
 
-    report = f"""### ✅ AI 施工完成
+    # 更新報告格式
+    report = f"""### ✅ AI 施工完成 (v11)
 **策略推理**: {plan.get('reasoning')}
-**視覺分析**: {plan.get('analysis')}
+**基礎修整**:
+- 亮度修正: `{plan.get('brightness', 1.0)}`
+- 飽和度: `{plan.get('saturation', 1.0)}`
+- 色溫偏移: `{plan.get('temperature', 0.0)}`
 **使用濾鏡**: `{plan.get('selected_lut')}` (強度: {plan.get('intensity')})
 **推薦文案**:
 > {plan.get('caption')}
@@ -149,8 +156,8 @@ def get_current_memory():
 
 
 # ================= GUI 建構 =================
-with gr.Blocks(title="Gemini Agent v10 (GUI)") as app:
-    gr.Markdown("# 🤖 Gemini Agent v10 (Hybrid GUI)")
+with gr.Blocks(title="Gemini Agent v11 (GUI)") as app:
+    gr.Markdown("# 🤖 Gemini Agent v11 (AI Retoucher)")
     gr.Markdown("雙核大腦：`Gemini 3 Pro` + `Visual Smart Planner` + `Secure Core`")
 
     chat_state = gr.State(None)
@@ -166,7 +173,7 @@ with gr.Blocks(title="Gemini Agent v10 (GUI)") as app:
                         placeholder="例如：日系冷白、王家衛風格、用我記憶中的招牌風格...",
                         lines=2
                     )
-                    btn_process = gr.Button("🚀 開始 AI 修圖", variant="primary")
+                    btn_process = gr.Button("🚀 開始 AI 修圖 (v11)", variant="primary")
                 with gr.Column(scale=1):
                     output_img = gr.Image(label="處理結果", type="pil")
                     output_info = gr.Markdown(label="AI 思考報告")

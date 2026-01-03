@@ -11,12 +11,12 @@ from rich.table import Table
 from rich.markdown import Markdown
 from rich.progress import track
 
-# 匯入 v10 核心模組
+# 匯入 v11 核心模組
 from core.lut_engine import LUTEngine
 from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
 from core.memory_manager import MemoryManager
-from core.security import execute_safe_command  # [新增] 安全模組
+from core.security import execute_safe_command
 
 # ================= 系統設定 =================
 if sys.platform.startswith('win'):
@@ -80,7 +80,7 @@ def create_chat_session():
     """建立 Session (使用安全指令工具)"""
     genai.configure(api_key=API_KEY)
 
-    # [修改] 使用 execute_safe_command
+    # 使用 execute_safe_command
     tools = [execute_safe_command, remember_user_preference, check_available_luts]
 
     base_prompt = """
@@ -147,7 +147,7 @@ def select_files_from_directory(dir_path):
 # ================= 主程式 =================
 async def main():
     console.clear()
-    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v10 (Secure & Optimized)[/]", border_style="cyan"))
+    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v11 (AI Retoucher)[/]", border_style="cyan"))
     console.print(f"[dim]✅ 系統就緒：已載入 {len(all_luts)} 個濾鏡 | 雙核大腦已連線[/]\n")
 
     while True:
@@ -189,13 +189,27 @@ async def main():
 
                         if plan and plan.get('selected_lut'):
                             if count == 1:
-                                console.print(
-                                    Panel(f"策略: {plan['reasoning']}\nLUT: {plan['selected_lut']}", title="AI 決策"))
-                            final_img, msg = lut_engine.apply_lut(img_path, plan['selected_lut'],
-                                                                  plan.get('intensity', 1.0))
+                                # v11: 顯示詳細參數
+                                console.print(Panel(
+                                    f"策略: {plan.get('reasoning', '無')}\n"
+                                    f"LUT: {plan['selected_lut']} (強度 {plan.get('intensity', 1.0)})\n"
+                                    f"修整: 亮({plan.get('brightness', 1.0)}) 飽({plan.get('saturation', 1.0)}) 溫({plan.get('temperature', 0.0)})",
+                                    title="AI 決策面板"
+                                ))
+
+                            # [v11 關鍵] 傳遞所有新參數給引擎
+                            final_img, msg = lut_engine.apply_lut(
+                                img_path,
+                                plan['selected_lut'],
+                                intensity=plan.get('intensity', 1.0),
+                                brightness=plan.get('brightness', 1.0),
+                                saturation=plan.get('saturation', 1.0),
+                                temperature=plan.get('temperature', 0.0)
+                            )
+
                             if final_img:
                                 if not os.path.exists("output"): os.makedirs("output")
-                                save_path = f"output/v10_{os.path.basename(img_path)}"
+                                save_path = f"output/v11_{os.path.basename(img_path)}"
                                 final_img.save(save_path)
                                 console.print(f"   [green]✅ 儲存: {save_path}[/]")
                 except KeyboardInterrupt:
