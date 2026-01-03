@@ -16,11 +16,9 @@ from rich.progress import track
 from core.lut_engine import LUTEngine
 from core.rag_core import KnowledgeBase
 from core.smart_planner import SmartPlanner
+from core.memory_manager import MemoryManager
 
-# ==========================================
-# 🔧 系統設定與編碼修正
-# ==========================================
-# 強制 Windows 使用 UTF-8，避免輸出中文時崩潰
+# ================= 系統設定 =================
 if sys.platform.startswith('win'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -36,10 +34,23 @@ if not API_KEY:
     console.print("[red]❌ 錯誤: 請在 .env 設定 GEMINI_API_KEY[/]")
     sys.exit(1)
 
+# 初始化核心
+memory_mgr = MemoryManager()
+lut_engine = LUTEngine()
+rag = KnowledgeBase()
 
-# ==========================================
-# 🔧 工具函式
-# ==========================================
+# 索引建立
+try:
+    all_luts = lut_engine.list_luts()
+    if all_luts:
+        rag.index_luts(all_luts)
+except Exception as e:
+    console.print(f"[yellow]⚠️ 索引建立警告: {e}[/]")
+
+planner = SmartPlanner(API_KEY, rag)
+
+
+# ================= 工具函式 =================
 def execute_terminal_command(command: str):
     """執行 Windows 終端機指令"""
     try:
@@ -49,7 +60,7 @@ def execute_terminal_command(command: str):
             shell=True,
             capture_output=True,
             text=True,
-            encoding='utf-8'  # 防止中文亂碼
+            encoding='utf-8'
         )
         if result.returncode == 0:
             return f"✅ 執行成功:\n{result.stdout}"
@@ -59,25 +70,64 @@ def execute_terminal_command(command: str):
         return f"⚠️ 系統錯誤: {str(e)}"
 
 
+def remember_user_preference(info: str):
+    """記憶工具"""
+    console.print(f"[yellow]🧠 正在寫入記憶: {info}[/]")
+    return memory_mgr.add_preference(info)
+
+
+def check_available_luts(keyword: str = ""):
+    """查詢本地 LUT 工具"""
+    console.print(f"[dim]🔍 AI 正在翻閱 LUT 資料庫 (關鍵字: {keyword})...[/]")
+    all_files = lut_engine.list_luts()
+    names = [os.path.basename(f) for f in all_files]
+
+    if keyword:
+        filtered = [n for n in names if keyword.lower() in n.lower()]
+        if not filtered:
+            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(names)} 個濾鏡可選。"
+        return f"找到 {len(filtered)} 個相關濾鏡，例如: {', '.join(filtered[:30])}..."
+
+    import random
+    sample = random.sample(names, min(len(names), 30))
+    return f"系統目前擁有 {len(names)} 個濾鏡。包含: {', '.join(sample)}... 等。"
+
+
 def create_chat_session():
-    """建立對話 Session"""
+    """建立 Session (整合所有工具)"""
     genai.configure(api_key=API_KEY)
-    tools = [execute_terminal_command]
+
+    # 這裡賦予了查閱 LUT 的權限
+    tools = [execute_terminal_command, remember_user_preference, check_available_luts]
+
+    base_prompt = """
+    你是一個強大的 AI 助理 (Gemini 3 Pro)。
+
+    【你的能力與資源】
+    1. 你擁有「視覺引擎」，可以存取使用者硬碟中的 LUT 濾鏡 (透過 check_available_luts 工具)。
+    2. 千萬不要說「我無法存取檔案」，你完全可以透過工具查閱。
+    3. 如果使用者覺得濾鏡重複，請主動查詢 check_available_luts 並推薦其他款。
+
+    【核心行為準則】
+    1. 圖片處理：引導使用圖片模式。
+    2. 系統指令：使用 execute_terminal_command。
+    3. 記憶能力：使用 remember_user_preference。
+    4. 語言風格：繁體中文，自信、專業。
+    """
+
+    dynamic_context = memory_mgr.get_system_prompt_addition()
+    final_system_prompt = base_prompt + dynamic_context
+
     model = genai.GenerativeModel(
         model_name='gemini-3-pro-preview',
         tools=tools,
-        system_instruction="""
-        你是一個強大的 AI 助理 (Gemini 3 Pro)。
-        1. 如果使用者輸入路徑或要求修圖，請引導他們使用圖片模式。
-        2. 如果使用者輸入系統指令（如 git, dir, mkdir），請使用 execute_terminal_command 工具執行。
-        3. 回答請簡潔有力，使用繁體中文。
-        """
+        system_instruction=final_system_prompt
     )
     return model.start_chat(enable_automatic_function_calling=True)
 
 
+# ================= 介面邏輯 =================
 def get_input_safe(prompt_text):
-    """安全輸入，防止 Ctrl+C 崩潰"""
     while True:
         try:
             user_in = console.input(prompt_text)
@@ -88,7 +138,6 @@ def get_input_safe(prompt_text):
 
 
 def select_files_from_directory(dir_path):
-    """資料夾選單"""
     valid_exts = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff')
     try:
         files = [f for f in os.listdir(dir_path) if f.lower().endswith(valid_exts)]
@@ -115,50 +164,31 @@ def select_files_from_directory(dir_path):
             pass
 
 
-# ==========================================
-# 🚀 主程式 (不死鳥版)
-# ==========================================
+# ================= 主程式 =================
 async def main():
     console.clear()
-    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v7 (Bulletproof)[/]", border_style="cyan"))
-
-    # 1. 初始化
-    with console.status("[bold green]正在啟動系統...[/]"):
-        try:
-            engine = LUTEngine()
-            rag = KnowledgeBase()
-            planner = SmartPlanner(API_KEY, rag)
-            all_luts = engine.list_luts()
-            if all_luts: rag.index_luts(all_luts)
-            chat_session = create_chat_session()
-        except KeyboardInterrupt:
-            return
-
+    console.print(Panel.fit("[bold cyan]🤖 Gemini Agent v9 (Integrated CLI)[/]", border_style="cyan"))
     console.print(f"[dim]✅ 系統就緒：已載入 {len(all_luts)} 個濾鏡 | 雙核大腦已連線[/]\n")
 
     while True:
-        # [保護層 1] 全局錯誤攔截：確保 loop 永遠不會因為 Exception 而停止
         try:
             console.print("\n[dim]──────────────────────────────────────────────────[/]")
             user_input = get_input_safe("[yellow]請輸入 [bold white]圖片路徑[/] 或 [bold white]指令/聊天[/]: [/]")
 
-            # 處理 Ctrl+C (回傳 None)
             if user_input is None:
                 if Confirm.ask("\n[bold yellow]要離開程式嗎？[/]"): break
-                continue  # 否則回到開頭
+                continue
 
             if user_input.lower() in ["exit", "quit"]: break
 
-            # 處理路徑
             raw_input = user_input.replace('"', '').replace("'", "")
             target_path = raw_input
             if not os.path.exists(target_path):
                 check_input = os.path.join("input", target_path)
                 if os.path.exists(check_input): target_path = check_input
 
-            # 🔀 分流邏輯
             if os.path.exists(target_path):
-                # === 🖼️ 視覺模式 ===
+                # 🖼️ 視覺模式
                 console.print("[bold cyan]🖼️ 偵測到圖片，進入視覺模式[/]")
                 target_files = []
                 if os.path.isdir(target_path):
@@ -169,9 +199,9 @@ async def main():
 
                 count = len(target_files)
                 style_req = get_input_safe("[green]🎨 請描述風格: [/]")
-                if not style_req: continue  # 如果按 Ctrl+C 取消風格輸入，回到主選單
+                if not style_req: continue
 
-                console.print(f"\n[bold cyan]🚀 Smart Planner 思考中... (按 Ctrl+C 可中斷)[/]")
+                console.print(f"\n[bold cyan]🚀 Smart Planner 思考中...[/]")
                 try:
                     iterator = track(target_files, description="修圖進度") if count > 1 else target_files
                     for img_path in iterator:
@@ -181,48 +211,38 @@ async def main():
                             if count == 1:
                                 console.print(
                                     Panel(f"策略: {plan['reasoning']}\nLUT: {plan['selected_lut']}", title="AI 決策"))
-
-                            final_img, msg = engine.apply_lut(img_path, plan['selected_lut'],
-                                                              plan.get('intensity', 1.0))
+                            final_img, msg = lut_engine.apply_lut(img_path, plan['selected_lut'],
+                                                                  plan.get('intensity', 1.0))
                             if final_img:
                                 if not os.path.exists("output"): os.makedirs("output")
-                                save_path = f"output/v6_{os.path.basename(img_path)}"
+                                save_path = f"output/v9_{os.path.basename(img_path)}"
                                 final_img.save(save_path)
                                 console.print(f"   [green]✅ 儲存: {save_path}[/]")
                 except KeyboardInterrupt:
-                    console.print("\n[bold yellow]🛑 視覺任務已暫停，回到主選單[/]")
+                    console.print("\n[bold yellow]🛑 視覺任務已暫停[/]")
 
             else:
-                # === 💬 對話模式 ===
+                # 💬 對話模式
+                temp_session = create_chat_session()
                 try:
-                    with console.status("[bold magenta]🧠 Gemini 思考中... (按 Ctrl+C 可中斷)[/]", spinner="dots"):
-                        # 使用 wait_for 讓 task 可以被取消
-                        task = asyncio.create_task(asyncio.to_thread(chat_session.send_message, user_input))
-                        try:
-                            response = await task
-                            console.print(Panel(
-                                Markdown(response.text),
-                                title="🤖 Gemini Assistant",
-                                border_style="magenta"
-                            ))
-                        except asyncio.CancelledError:
-                            raise KeyboardInterrupt  # 轉拋給外層
-
+                    with console.status("[bold magenta]🧠 Gemini 思考中...[/]", spinner="dots"):
+                        response = await asyncio.to_thread(temp_session.send_message, user_input)
+                        console.print(Panel(
+                            Markdown(response.text),
+                            title="🤖 Gemini Assistant",
+                            border_style="magenta"
+                        ))
                 except KeyboardInterrupt:
                     console.print("\n[bold yellow]🛑 對話已取消[/]")
                 except Exception as e:
                     console.print(f"[red]❌ 對話發生錯誤: {e}[/]")
 
         except KeyboardInterrupt:
-            # 這是最後一道防線，捕捉所有未預期的 Ctrl+C
-            console.print("\n[bold yellow]⚠️ (已攔截中斷訊號) 回到主選單...[/]")
+            console.print("\n[bold yellow]⚠️ (已攔截中斷訊號)[/]")
             continue
-
         except Exception as e:
-            # [關鍵] 捕捉所有崩潰，讓程式活下去！
-            console.print(f"\n[bold red]💥 發生未預期的系統錯誤: {e}[/]")
-            console.print("[dim]系統正在自動恢復，請稍候...[/]")
-            await asyncio.sleep(1)  # 休息一下避免無窮迴圈刷屏
+            console.print(f"\n[bold red]💥 系統錯誤: {e}[/]")
+            await asyncio.sleep(1)
             continue
 
 

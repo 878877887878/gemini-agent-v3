@@ -1,233 +1,232 @@
 import gradio as gr
 import os
 import sys
-import json
 import asyncio
-import shutil
-from datetime import datetime
-from PIL import Image
-from pillow_lut import load_cube_file
+import warnings
 import google.generativeai as genai
 from dotenv import load_dotenv
+from PIL import Image
 
-# ================= 復用原本的核心邏輯 =================
-
-load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
-LUT_DIR = "luts"
-BACKUP_DIR = "backups"
-
-# 忽略 Google SDK 的過期警告 (暫時性修正，以免干擾視窗)
-import warnings
-
+# 忽略警告
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-if API_KEY:
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from core.lut_engine import LUTEngine
+from core.rag_core import KnowledgeBase
+from core.smart_planner import SmartPlanner
+from core.memory_manager import MemoryManager
+
+# 系統初始化
+if sys.platform.startswith('win'):
     try:
-        genai.configure(api_key=API_KEY)
-    except Exception as e:
-        print(f"⚠️ Gemini API 設定失敗: {e}")
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+load_dotenv()
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    print("❌ 錯誤: 請在 .env 設定 GEMINI_API_KEY")
+    sys.exit(1)
+
+print("🚀 正在啟動 GUI 核心系統...")
+memory_mgr = MemoryManager()
+lut_engine = LUTEngine()
+rag = KnowledgeBase()
+
+all_luts = lut_engine.list_luts()
+if all_luts:
+    rag.index_luts(all_luts)
+
+planner = SmartPlanner(API_KEY, rag)
 
 
-class LUTManager:
-    def __init__(self):
-        self.lut_map = {}  # 用來儲存 {顯示名稱: 檔案完整路徑} 的字典
-
-    def list_luts(self):
-        """遞迴掃描所有子目錄，更新索引並回傳顯示名稱列表"""
-        self.lut_map = {}  # 每次列出時重新掃描，確保抓到新檔案
-        if not os.path.exists(LUT_DIR): return []
-
-        # 使用 os.walk 進行深度遞迴搜尋
-        for dirpath, dirnames, filenames in os.walk(LUT_DIR):
-            for filename in filenames:
-                # 支援 .cube 以及常見 LUT 格式
-                if filename.lower().endswith(('.cube', '.3dl', '.look')):
-
-                    # 組合顯示名稱： "資料夾名稱 - 檔名" (這樣使用者才知道是哪個系列的)
-                    folder_name = os.path.basename(dirpath)
-                    # 如果 LUT 就在根目錄，顯示名稱就不加資料夾
-                    if os.path.abspath(dirpath) == os.path.abspath(LUT_DIR):
-                        display_name = filename
-                    else:
-                        display_name = f"{folder_name} - {filename}"
-
-                    full_path = os.path.join(dirpath, filename)
-                    self.lut_map[display_name] = full_path
-
-        return sorted(list(self.lut_map.keys()))
-
-    def load_lut(self, name):
-        """透過顯示名稱找到真實路徑並載入"""
-        try:
-            # 從字典查真實路徑
-            full_path = self.lut_map.get(name)
-
-            # 防呆：如果字典裡沒有 (例如程式剛啟動還沒掃描)，嘗試直接拼湊舊邏輯路徑
-            if not full_path:
-                full_path = os.path.join(LUT_DIR, name)
-
-            if full_path and os.path.exists(full_path):
-                return load_cube_file(full_path)
-            return None
-        except Exception as e:
-            print(f"⚠️ LUT 載入失敗 ({name}): {e}")
-            return None
-
-
-class LogicCore:
-    """將原本的 Console 邏輯封裝給 GUI 使用"""
-
-    def __init__(self):
-        self.lut_manager = LUTManager()
-
-    async def process_image(self, image, lut_name, enable_ai_caption):
-        """處理單張圖片 (供 GUI 預覽與處理用)"""
-        # 1. 套用 LUT
-        if lut_name:
-            lut = self.lut_manager.load_lut(lut_name)
-            if lut:
-                image = image.filter(lut)
-
-        caption = "AI 分析未啟用 (請檢查 API Key 或勾選啟用)"
-
-        # 2. AI 分析 (如果有勾選)
-        if enable_ai_caption and API_KEY:
-            try:
-                # 使用舊版 SDK 的呼叫方式 (維持與 agent.py 相容)
-                model = genai.GenerativeModel('gemini-3-pro-preview')
-                prompt = "請用繁體中文分析這張照片的構圖、光影與氛圍，並寫一段適合 IG 的文案。"
-
-                # 在執行緒中執行以避免卡住 GUI
-                response = await asyncio.to_thread(model.generate_content, [prompt, image])
-                caption = response.text
-            except Exception as e:
-                caption = f"分析失敗: {e}\n(可能是 API Key 問題或是 Google SDK 版本過舊)"
-
-        return image, caption
-
-    def create_backup(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if not os.path.exists(BACKUP_DIR): os.makedirs(BACKUP_DIR)
-        shutil.copy2(__file__, os.path.join(BACKUP_DIR, f"gui_backup_{timestamp}.py"))
-        return f"✅ 備份完成: {timestamp}"
-
-
-# ================= GUI 介面設計 =================
-
-logic = LogicCore()
-
-
-# --- 分頁 1: AI 聊天室 ---
-async def chat_response(message, history):
-    """處理聊天訊息"""
-    if not API_KEY:
-        return "❌ 錯誤：未設定 GEMINI_API_KEY"
-
-    system_prompt = f"""
-    你是一個 AI 助理，透過 Gradio GUI 運作。
-    目前的可用濾鏡: {logic.lut_manager.list_luts()}
-    如果使用者想處理照片，請引導他們去「圖片處理實驗室」分頁。
-    如果使用者想備份，請回傳 JSON: {{"action": "backup"}}
-    """
-
+# ================= 工具函式 =================
+def execute_terminal_command(command: str):
+    import subprocess
     try:
-        model = genai.GenerativeModel(
-            model_name='gemini-3-pro-preview',
-            system_instruction=system_prompt
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding='utf-8'
         )
-        chat = model.start_chat(history=[])
-        response = await asyncio.to_thread(chat.send_message, message)
-        text = response.text
-
-        if '{"action": "backup"}' in text:
-            msg = logic.create_backup()
-            return f"{text}\n\n(系統訊息: {msg})"
-
-        return text
+        if result.returncode == 0:
+            return f"✅ 執行成功:\n{result.stdout}"
+        else:
+            return f"❌ 執行失敗:\n{result.stderr}"
     except Exception as e:
-        return f"❌ AI 回應發生錯誤: {e}"
+        return f"⚠️ 系統錯誤: {str(e)}"
 
 
-# --- 分頁 2: 圖片處理實驗室 ---
-async def process_pipeline(image, lut_dropdown, ai_check):
-    if image is None:
-        return None, "請先上傳圖片"
-
-    try:
-        pil_image = Image.fromarray(image).convert('RGB')
-        processed_img, caption = await logic.process_image(pil_image, lut_dropdown, ai_check)
-        return processed_img, caption
-    except Exception as e:
-        return None, f"處理過程發生錯誤: {e}"
+def remember_user_preference(info: str):
+    return memory_mgr.add_preference(info)
 
 
-# --- 建構 Gradio App ---
-def create_ui():
-    custom_css = """
-    footer {visibility: hidden}
-    .gradio-container {background-color: #f0f2f6}
+def check_available_luts(keyword: str = ""):
+    """查詢本地 LUT 工具 (GUI 版)"""
+    all_files = lut_engine.list_luts()
+    names = [os.path.basename(f) for f in all_files]
+    if keyword:
+        filtered = [n for n in names if keyword.lower() in n.lower()]
+        if not filtered:
+            return f"找不到包含 '{keyword}' 的濾鏡，但系統共有 {len(names)} 個濾鏡。"
+        return f"找到 {len(filtered)} 個相關濾鏡，例如: {', '.join(filtered[:30])}..."
+    import random
+    sample = random.sample(names, min(len(names), 30))
+    return f"系統目前擁有 {len(names)} 個濾鏡。包含: {', '.join(sample)}... 等。"
+
+
+# ================= 對話邏輯 =================
+def create_chat_session():
+    genai.configure(api_key=API_KEY)
+
+    # 確保 GUI 也能查閱 LUT
+    tools = [execute_terminal_command, remember_user_preference, check_available_luts]
+
+    base_prompt = """
+    你是一個強大的 AI 助理 (Gemini 3 Pro)。
+    這是一個 GUI 介面環境。
+
+    【你的能力與資源】
+    1. 你擁有「視覺引擎」，可以存取使用者硬碟中的 LUT 濾鏡 (透過 check_available_luts 工具)。
+    2. 千萬不要說「我無法存取檔案」，你完全可以透過工具查閱。
+
+    【核心行為準則】
+    1. 圖片處理：如果使用者上傳圖片或要求修圖，請引導他們切換到「👁️ 智能視覺修圖」分頁。
+    2. 系統指令：可以使用 execute_terminal_command 執行系統指令。
+    3. 記憶能力：如果使用者提到個人偏好，請務必使用 remember_user_preference 工具儲存。
+    4. 語言風格：請使用繁體中文，回答親切且專業。
     """
 
-    # 移除 theme 和 css 參數，改在 launch 中設定 (或是直接省略以避免版本衝突)
-    with gr.Blocks(title="Gemini Agent GUI") as app:
-        gr.Markdown("# 🤖 Gemini AI Agent 控制台")
+    dynamic_context = memory_mgr.get_system_prompt_addition()
+    final_prompt = base_prompt + dynamic_context
 
-        with gr.Tabs():
-            # Tab 1: 聊天
-            with gr.TabItem("💬 AI 助手"):
-                gr.ChatInterface(
-                    fn=chat_response,
-                    examples=["幫我備份程式碼", "最近有什麼推薦的濾鏡？", "你會做什麼？"],
-                    title="Agent Chat"
-                )
+    model = genai.GenerativeModel(
+        model_name='gemini-3-pro-preview',
+        tools=tools,
+        system_instruction=final_prompt
+    )
+    return model.start_chat(enable_automatic_function_calling=True)
 
-            # Tab 2: 修圖
-            with gr.TabItem("🎨 圖片處理實驗室"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        input_img = gr.Image(label="上傳圖片", sources=["upload", "clipboard"])
 
-                        luts = logic.lut_manager.list_luts()
-                        lut_dropdown = gr.Dropdown(choices=luts, label="選擇濾鏡 (LUT)",
-                                                   value=luts[0] if luts else None)
+def chat_response(message, history, session_state):
+    if session_state is None:
+        session_state = create_chat_session()
 
-                        ai_check = gr.Checkbox(label="啟用 AI 視覺分析", value=True)
-                        btn_run = gr.Button("✨ 開始處理", variant="primary")
+    try:
+        response = session_state.send_message(message)
+        return response.text, session_state
+    except Exception as e:
+        return f"❌ 發生錯誤: {str(e)}", session_state
 
-                    with gr.Column(scale=1):
-                        output_img = gr.Image(label="處理結果", type="pil")
-                        # 修正: 移除了 show_copy_button 參數以相容舊版 Gradio
-                        output_text = gr.Textbox(label="AI 產生的文案", lines=5)
 
-                btn_run.click(
-                    fn=process_pipeline,
-                    inputs=[input_img, lut_dropdown, ai_check],
-                    outputs=[output_img, output_text]
-                )
+# ================= 視覺邏輯 =================
+def process_image_smartly(image, user_req):
+    if image is None:
+        return None, "❌ 請先上傳圖片"
 
-            # Tab 3: 系統資訊
-            with gr.TabItem("⚙️ 系統狀態"):
-                gr.Markdown(f"""
-                ### 系統資訊
-                - **API Key Status**: {'✅ 已設定' if API_KEY else '❌ 未設定'}
-                - **LUT 數量**: {len(logic.lut_manager.list_luts())}
-                - **備份目錄**: {BACKUP_DIR}
-                """)
-                btn_refresh = gr.Button("重新掃描 LUT")
+    if not user_req:
+        user_req = "自動調整，讓照片更好看"
 
-                def refresh_luts():
-                    new_luts = logic.lut_manager.list_luts()
-                    return gr.Dropdown(choices=new_luts)
+    temp_path = "temp_gui_input.jpg"
+    image.save(temp_path)
 
-                btn_refresh.click(refresh_luts, outputs=lut_dropdown)
+    plan = planner.generate_plan(temp_path, user_req)
 
-    return app
+    if not plan or not plan.get('selected_lut'):
+        return None, f"⚠️ AI 思考失敗: {plan.get('reasoning', '未知錯誤')}"
 
+    final_img, msg = lut_engine.apply_lut(
+        temp_path,
+        plan['selected_lut'],
+        intensity=plan.get('intensity', 1.0)
+    )
+
+    report = f"""### ✅ AI 施工完成
+**策略推理**: {plan.get('reasoning')}
+**視覺分析**: {plan.get('analysis')}
+**使用濾鏡**: `{plan.get('selected_lut')}` (強度: {plan.get('intensity')})
+**推薦文案**:
+> {plan.get('caption')}
+"""
+    return final_img, report
+
+
+def get_current_memory():
+    mem = memory_mgr._load_memory()
+    prefs = mem.get("user_preferences", [])
+    if not prefs:
+        return "目前沒有記憶資料。"
+    return "\n".join([f"- {p}" for p in prefs])
+
+
+# ================= GUI 建構 =================
+with gr.Blocks(title="Gemini Agent v9 (GUI)") as app:
+    gr.Markdown("# 🤖 Gemini Agent v9 (Hybrid GUI)")
+    gr.Markdown("雙核大腦：`Gemini 3 Pro` + `Visual Smart Planner` + `Long-term Memory`")
+
+    chat_state = gr.State(None)
+
+    with gr.Tabs():
+        # Tab 1: 修圖
+        with gr.TabItem("👁️ 智能視覺修圖"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    input_img = gr.Image(type="pil", label="上傳圖片")
+                    style_input = gr.Textbox(
+                        label="風格需求",
+                        placeholder="例如：日系冷白、王家衛風格、用我記憶中的招牌風格...",
+                        lines=2
+                    )
+                    btn_process = gr.Button("🚀 開始 AI 修圖", variant="primary")
+                with gr.Column(scale=1):
+                    output_img = gr.Image(label="處理結果", type="pil")
+                    output_info = gr.Markdown(label="AI 思考報告")
+            btn_process.click(
+                process_image_smartly,
+                inputs=[input_img, style_input],
+                outputs=[output_img, output_info]
+            )
+
+        # Tab 2: 對話 (修正版)
+        with gr.TabItem("💬 核心大腦 (Chat & Memory)"):
+            chatbot = gr.Chatbot(height=500)  # 預設 tuple 格式
+            msg_input = gr.Textbox(placeholder="輸入文字... (例如：'我有什麼濾鏡?' 或 'git status')", label="User")
+
+
+            def user_msg(user_message, history):
+                # Tuple append
+                return "", history + [[user_message, None]]
+
+
+            def bot_msg(history, state):
+                user_message = history[-1][0]
+                bot_response, new_state = chat_response(user_message, history, state)
+                history[-1][1] = bot_response
+                return history, new_state
+
+
+            msg_input.submit(user_msg, [msg_input, chatbot], [msg_input, chatbot], queue=False).then(
+                bot_msg, [chatbot, chat_state], [chatbot, chat_state]
+            )
+
+        # Tab 3: 記憶
+        with gr.TabItem("🧠 大腦記憶庫"):
+            gr.Markdown("以下是 AI 目前記住的關於您的偏好與規則：")
+            memory_display = gr.Textbox(
+                label="User Memory (user_memory.json)",
+                value=get_current_memory(),
+                lines=10,
+                interactive=False
+            )
+            btn_refresh_mem = gr.Button("🔄 重新讀取記憶")
+            btn_refresh_mem.click(get_current_memory, outputs=memory_display)
 
 if __name__ == "__main__":
-    ui = create_ui()
-    # 將 theme 和 css 移到這裡 (如果您的 Gradio 版本支援的話)，或直接不設定以求最穩定
-    # 這裡使用最基本的設定以確保能執行
-    ui.queue().launch(inbrowser=True, server_name="127.0.0.1")
+    app.queue().launch(inbrowser=True, server_name="127.0.0.1")
